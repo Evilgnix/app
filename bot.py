@@ -1,6 +1,5 @@
 """
-🤖 بوت الكورسات - نسخة مصلّحة
-إصلاح: تكرار الكورسات + حفظ دائم على Railway
+🤖 بوت الكورسات - حفظ دائم على GitHub
 """
 
 import requests
@@ -10,73 +9,104 @@ import schedule
 import json
 import os
 import re
+import base64
 from datetime import datetime
 
 # ========================================
 # ⚙️ الإعدادات
 # ========================================
-TELEGRAM_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "@your_channel")
-SHRINKME_API_KEY    = os.environ.get("SHRINKME_API_KEY", "YOUR_KEY")
+TELEGRAM_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "")
+SHRINKME_API_KEY    = os.environ.get("SHRINKME_API_KEY", "")
+GITHUB_TOKEN        = os.environ.get("GITHUB_TOKEN", "")       # Personal Access Token
+GITHUB_REPO         = os.environ.get("GITHUB_REPO", "")        # مثلاً: mabrouk/courses-bot
+GITHUB_FILE         = "posted_courses.json"                     # اسم الملف في الـ repo
 POSTS_PER_RUN       = int(os.environ.get("POSTS_PER_RUN", "5"))
 POST_INTERVAL_HOURS = int(os.environ.get("POST_INTERVAL_HOURS", "3"))
 
-# ✅ مسار ثابت على Railway مش بيتمسحش
-POSTED_FILE = "/app/posted_courses.json"
-# لو مش Railway استخدم مجلد الكود
-if not os.path.exists("/app"):
-    POSTED_FILE = "posted_courses.json"
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/122.0.0.0 Safari/537.36",
+                  "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
+}
+
+GITHUB_HEADERS = {
+    "Authorization": f"token {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github.v3+json",
 }
 
 
 # ========================================
-# 💾 تتبع المنشور بالعنوان مش الـ URL
+# ☁️ حفظ وجلب من GitHub
 # ========================================
 def load_posted():
-    """يرجع dict فيه titles و urls"""
+    """يجيب الملف من GitHub"""
     try:
-        if os.path.exists(POSTED_FILE):
-            with open(POSTED_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # دعم النسخ القديمة (list)
-                if isinstance(data, list):
-                    return {"titles": [], "urls": data}
-                return data
-    except Exception:
-        pass
-    return {"titles": [], "urls": []}
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+        r   = requests.get(url, headers=GITHUB_HEADERS, timeout=10)
+
+        if r.status_code == 404:
+            # الملف مش موجود لسه — هيتعمل أول نشر
+            print("  📄 أول مرة: الملف مش موجود على GitHub")
+            return {"titles": [], "urls": [], "sha": None}
+
+        data    = r.json()
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        posted  = json.loads(content)
+        posted["sha"] = data["sha"]  # محتاجينه للـ update
+        print(f"  ☁️ محمّل من GitHub: {len(posted.get('titles', []))} كورس منشور")
+        return posted
+
+    except Exception as e:
+        print(f"  ⚠️ load_posted: {e}")
+        return {"titles": [], "urls": [], "sha": None}
+
 
 def save_posted(data):
+    """يحفظ الملف على GitHub"""
     try:
-        os.makedirs(os.path.dirname(POSTED_FILE), exist_ok=True) if os.path.dirname(POSTED_FILE) else None
-        with open(POSTED_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+        sha = data.pop("sha", None)
+
+        # احتفظ بآخر 2000 فقط
+        data["titles"] = data.get("titles", [])[-2000:]
+        data["urls"]   = data.get("urls", [])[-2000:]
+
+        content_bytes   = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        content_base64  = base64.b64encode(content_bytes).decode("utf-8")
+
+        url     = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+        payload = {
+            "message": f"update posted courses {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "content": content_base64,
+        }
+        if sha:
+            payload["sha"] = sha  # لازم للـ update
+
+        r = requests.put(url, headers=GITHUB_HEADERS, json=payload, timeout=15)
+
+        if r.status_code in [200, 201]:
+            new_sha       = r.json()["content"]["sha"]
+            data["sha"]   = new_sha
+            print(f"  ☁️ محفوظ على GitHub ✅")
+        else:
+            print(f"  ❌ GitHub save error: {r.status_code} {r.text[:100]}")
+
+        data["sha"] = sha  # رجّع الـ sha للـ dict
+
     except Exception as e:
         print(f"  ⚠️ save_posted: {e}")
 
-def is_posted(posted_data, title, url):
-    """يتحقق لو الكورس اتنشر قبل كده بالعنوان أو الـ URL"""
-    clean_title = clean_key(title)
-    return (clean_title in posted_data["titles"] or
-            url in posted_data["urls"])
-
-def mark_posted(posted_data, title, url):
-    posted_data["titles"].append(clean_key(title))
-    posted_data["urls"].append(url)
-    # احتفظ بآخر 500 فقط
-    posted_data["titles"] = posted_data["titles"][-500:]
-    posted_data["urls"]   = posted_data["urls"][-500:]
-    save_posted(posted_data)
 
 def clean_key(text):
-    """ينظف العنوان عشان يكون مفتاح موحّد"""
     return re.sub(r'[^a-z0-9]', '', text.lower())[:50]
+
+def is_posted(data, title, url):
+    return clean_key(title) in data.get("titles", []) or url in data.get("urls", [])
+
+def mark_posted(data, title, url):
+    key = clean_key(title)
+    if key not in data["titles"]: data["titles"].append(key)
+    if url not in data["urls"]:   data["urls"].append(url)
 
 
 # ========================================
@@ -86,13 +116,11 @@ def scrape_discudemy(max_courses=20):
     courses = []
     try:
         for page in [1, 2]:
-            url  = f"https://www.discudemy.com/all/{page}"
-            r    = requests.get(url, headers=HEADERS, timeout=15)
+            r    = requests.get(f"https://www.discudemy.com/all/{page}", headers=HEADERS, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
             for card in soup.select(".card, article"):
                 try:
-                    a = (card.select_one("h3 a") or card.select_one("h2 a") or
-                         card.select_one("a.title") or card.select_one("a"))
+                    a = (card.select_one("h3 a") or card.select_one("h2 a") or card.select_one("a"))
                     if not a: continue
                     title = a.get_text(strip=True)
                     href  = a.get("href","")
@@ -118,8 +146,7 @@ def scrape_udemyfreebies(max_courses=20):
     courses = []
     try:
         for page in [1, 2]:
-            url  = f"https://udemyfreebies.com/free-udemy-courses/{page}"
-            r    = requests.get(url, headers=HEADERS, timeout=15)
+            r    = requests.get(f"https://udemyfreebies.com/free-udemy-courses/{page}", headers=HEADERS, timeout=15)
             soup = BeautifulSoup(r.text, "html.parser")
             for card in soup.select(".coupon-card,.course-card,.col-md-4,article"):
                 try:
@@ -150,12 +177,11 @@ def scrape_udemyfreebies(max_courses=20):
 def scrape_tutorialbar(max_courses=20):
     courses = []
     try:
-        url  = "https://www.tutorialbar.com/all-courses/"
-        r    = requests.get(url, headers=HEADERS, timeout=15)
+        r    = requests.get("https://www.tutorialbar.com/all-courses/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
         for card in soup.select("article,.post"):
             try:
-                a = card.select_one("h2 a, h3 a, .entry-title a")
+                a = card.select_one("h2 a,h3 a,.entry-title a")
                 if not a: continue
                 title = a.get_text(strip=True)
                 href  = a.get("href","")
@@ -172,73 +198,47 @@ def scrape_tutorialbar(max_courses=20):
 
 
 # ========================================
-# 📚 جمع + إزالة التكرار بالعنوان
+# 📚 جمع + إزالة التكرار
 # ========================================
 def get_all_courses():
     print("📚 جاري جلب الكورسات...")
     all_courses = []
-
     for name, fn in [
         ("discudemy",     lambda: scrape_discudemy(20)),
         ("udemyfreebies", lambda: scrape_udemyfreebies(20)),
         ("tutorialbar",   lambda: scrape_tutorialbar(20)),
     ]:
         print(f"  🔍 {name}...")
-        try:
-            all_courses.extend(fn())
-        except Exception as e:
-            print(f"  ❌ {name}: {e}")
+        try: all_courses.extend(fn())
+        except Exception as e: print(f"  ❌ {name}: {e}")
         time.sleep(1)
 
-    # ✅ إزالة التكرار بالعنوان (مش الـ URL)
     seen, unique = set(), []
     for c in all_courses:
         key = clean_key(c["title"])
         if key not in seen and len(key) > 5:
             seen.add(key)
             unique.append(c)
-
     print(f"📦 {len(unique)} كورس فريد")
     return unique
 
 
 # ========================================
-# 🎯 جلب رابط Udemy المباشر
+# 🎯 رابط Udemy المباشر
 # ========================================
 def get_udemy_direct_link(page_url):
-    """يجيب رابط Udemy الحقيقي مع الكوبون"""
     try:
         r    = requests.get(page_url, headers=HEADERS, timeout=15, allow_redirects=True)
         soup = BeautifulSoup(r.text, "html.parser")
-
-        # طريقة 1: رابط مباشر في الصفحة
         for a in soup.select("a[href*='udemy.com/course']"):
             return a["href"]
-
-        # طريقة 2: أزرار التسجيل
-        for a in soup.select("a.btn,a.button,a[class*='enroll'],a[class*='coupon'],a[class*='get']"):
+        for a in soup.select("a.btn,a.button,a[class*='enroll'],a[class*='coupon']"):
             href = a.get("href","")
-            if "udemy.com" in href:
-                return href
-
-        # طريقة 3: في الـ JavaScript
+            if "udemy.com" in href: return href
         for script in soup.find_all("script"):
             t = script.string or ""
-            m = re.search(r'https://(?:www\.)?udemy\.com/course/[^"\'\\?\s]+\?couponCode=[^"\'\\?\s]+', t)
-            if m: return m.group(0)
             m = re.search(r'https://(?:www\.)?udemy\.com/course/[^"\'\\?\s]+', t)
             if m: return m.group(0)
-
-        # طريقة 4: تتبع redirect
-        for a in soup.select("a[href*='redirect'],a[href*='go'],a[href*='click']"):
-            href = a.get("href","")
-            if href and "udemy" not in href:
-                try:
-                    r2 = requests.get(href, headers=HEADERS, timeout=8, allow_redirects=True)
-                    if "udemy.com/course" in r2.url:
-                        return r2.url
-                except Exception: pass
-
     except Exception as e:
         print(f"  ⚠️ udemy_link: {e}")
     return None
@@ -248,16 +248,13 @@ def get_udemy_direct_link(page_url):
 # 🔍 تفاصيل الكورس
 # ========================================
 def get_course_details(page_url):
-    details = {
-        "description": "", "coupon_count": "غير محدد",
-        "expiry": "غير محدد", "udemy_url": page_url, "original_price": "",
-    }
+    details = {"description":"","coupon_count":"غير محدد",
+               "expiry":"غير محدد","udemy_url":page_url,"original_price":""}
     try:
         r    = requests.get(page_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
         text = soup.get_text()
 
-        # الوصف
         for sel in ["meta[name='description']",".course-description","[class*='description']","p.lead"]:
             el = soup.select_one(sel)
             if el:
@@ -266,36 +263,28 @@ def get_course_details(page_url):
                     details["description"] = desc[:297]+"..." if len(desc)>300 else desc
                     break
 
-        # الكوبونات
         for pat in [r"(\d+)\s*(?:coupon|coupons)\s*(?:left|remaining)",
                     r"(?:left|remaining)[:\s]*(\d+)\s*coupon"]:
             m = re.search(pat, text, re.IGNORECASE)
             if m: details["coupon_count"] = m.group(1); break
 
-        # الانتهاء
         for pat in [r"(?:expire[sd]?|valid until)[:\s]*([A-Za-z]+ \d{1,2},? \d{4})",
                     r"(?:expire[sd]?|valid until)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})"]:
             m = re.search(pat, text, re.IGNORECASE)
             if m: details["expiry"] = m.group(1).strip(); break
 
-        # السعر
         price_el = soup.select_one("[class*='price'],[class*='original']")
         if price_el:
             m = re.search(r"\$[\d.]+", price_el.get_text())
             if m: details["original_price"] = m.group(0)
 
-        # رابط Udemy المباشر
         udemy = get_udemy_direct_link(page_url)
         if udemy:
             details["udemy_url"] = udemy
             print(f"  🎯 Udemy مباشر ✅")
         else:
-            fallback = soup.select_one("a[href*='udemy.com']")
-            if fallback:
-                details["udemy_url"] = fallback["href"]
-                print(f"  🔗 Udemy fallback")
-            else:
-                print(f"  ⚠️ مفيش رابط Udemy")
+            fb = soup.select_one("a[href*='udemy.com']")
+            if fb: details["udemy_url"] = fb["href"]
 
     except Exception as e:
         print(f"  ⚠️ details: {e}")
@@ -331,7 +320,7 @@ def format_message(course, details, short_url):
     desc   = f"\n📖 *عن الكورس:*\n_{details['description']}_\n" if details["description"] else ""
     coupon = f"🎟️ متاح: *{details['coupon_count']} كوبون فقط!*" if details["coupon_count"] != "غير محدد" else "🎟️ الكوبونات: محدودة ⚠️"
     expiry = f"⏳ صالح حتى: *{details['expiry']}*" if details["expiry"] != "غير محدد" else "⏳ الصلاحية محدودة — اشترك الآن!"
-    direct = "✅ رابط Udemy مباشر" if details["udemy_url"] and "udemy.com" in details["udemy_url"] else ""
+    direct = "✅ رابط Udemy مباشر" if "udemy.com" in details.get("udemy_url","") else ""
 
     return f"""🔥 كورس مجاني - {course["source"]}
 
@@ -394,13 +383,10 @@ def run_bot():
     for course in courses:
         if new_count >= POSTS_PER_RUN:
             break
-
-        # ✅ تحقق بالعنوان والـ URL معًا
         if is_posted(posted, course["title"], course["page_url"]):
             continue
 
         print(f"\n📌 [{new_count+1}/{POSTS_PER_RUN}] {course['title'][:55]}...")
-
         details   = get_course_details(course["page_url"])
         time.sleep(2)
         short_url = shorten_url(details["udemy_url"])
@@ -409,6 +395,7 @@ def run_bot():
 
         if send_to_telegram(message):
             mark_posted(posted, course["title"], course["page_url"])
+            save_posted(posted)
             new_count += 1
             time.sleep(8)
 
@@ -419,7 +406,7 @@ def run_bot():
 # ⏱️ الجدولة
 # ========================================
 if __name__ == "__main__":
-    print("🤖 بوت الكورسات — نسخة مصلّحة")
+    print("🤖 بوت الكورسات — حفظ دائم على GitHub ☁️")
     print(f"📡 القناة: {TELEGRAM_CHANNEL_ID}")
     print(f"⏰ كل {POST_INTERVAL_HOURS} ساعات | {POSTS_PER_RUN} كورسات/دورة")
 
