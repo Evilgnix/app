@@ -65,35 +65,42 @@ def load_posted():
 def save_posted(data):
     """يحفظ الملف على GitHub"""
     try:
+        # ✅ خد الـ sha وشيله من البيانات اللي هتتحفظ
         sha = data.pop("sha", None)
 
         # احتفظ بآخر 2000 فقط
-        data["titles"] = data.get("titles", [])[-2000:]
-        data["urls"]   = data.get("urls", [])[-2000:]
+        save_data = {
+            "titles": data.get("titles", [])[-2000:],
+            "urls":   data.get("urls",   [])[-2000:],
+        }
 
-        content_bytes   = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        content_base64  = base64.b64encode(content_bytes).decode("utf-8")
+        content_base64 = base64.b64encode(
+            json.dumps(save_data, ensure_ascii=False, indent=2).encode("utf-8")
+        ).decode("utf-8")
 
         url     = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
         payload = {
-            "message": f"update posted courses {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "message": f"update {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             "content": content_base64,
         }
         if sha:
-            payload["sha"] = sha  # لازم للـ update
+            payload["sha"] = sha  # لازم للـ update (مش create)
 
         r = requests.put(url, headers=GITHUB_HEADERS, json=payload, timeout=15)
 
         if r.status_code in [200, 201]:
-            new_sha       = r.json()["content"]["sha"]
-            data["sha"]   = new_sha
+            # ✅ حدّث data بالـ sha الجديد من GitHub عشان الحفظة الجاية تشتغل
+            data["titles"] = save_data["titles"]
+            data["urls"]   = save_data["urls"]
+            data["sha"]    = r.json()["content"]["sha"]
             print(f"  ☁️ محفوظ على GitHub ✅")
         else:
-            print(f"  ❌ GitHub save error: {r.status_code} {r.text[:100]}")
-
-        data["sha"] = sha  # رجّع الـ sha للـ dict
+            # لو فشل، رجّع الـ sha القديم
+            data["sha"] = sha
+            print(f"  ❌ GitHub save error: {r.status_code} {r.text[:120]}")
 
     except Exception as e:
+        data["sha"] = sha if 'sha' in dir() else None
         print(f"  ⚠️ save_posted: {e}")
 
 
