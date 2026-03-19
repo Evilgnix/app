@@ -318,27 +318,27 @@ def shorten_url(long_url):
 # ========================================
 def format_message(course, details, short_url):
     emojis = {
-        "programming":"💻","development":"💻","design":"🎨","business":"💼",
-        "marketing":"📢","data":"📊","finance":"💰","it":"🖥️","security":"🔐",
-        "photography":"📷","music":"🎵","health":"💪","teaching":"📚",
+        "programming":"💻","development":"💻","design":"🎨",
+        "business":"💼","marketing":"📢","data":"📊",
+        "finance":"💰","it":"🖥️","security":"🔐",
     }
-    emoji  = next((v for k,v in emojis.items() if k.lower() in course["category"].lower()), "🎓")
+    emoji = next((v for k,v in emojis.items() if k.lower() in course["category"].lower()), "🎓")
+
     price  = f"~~{details['original_price']}~~ → *مجاناً* 🎉" if details["original_price"] else "~~مدفوع~~ → *مجاناً* 🎉"
     desc   = f"\n📖 *عن الكورس:*\n_{details['description']}_\n" if details["description"] else ""
     coupon = f"🎟️ متاح: *{details['coupon_count']} كوبون فقط!*" if details["coupon_count"] != "غير محدد" else "🎟️ الكوبونات: محدودة ⚠️"
-    expiry = f"⏳ صالح حتى: *{details['expiry']}*" if details["expiry"] != "غير محدد" else "⏳ الصلاحية محدودة — اشترك الآن!"
-    direct = "✅ رابط Udemy مباشر" if "udemy.com" in details.get("udemy_url","") else ""
+    expiry = f"⏳ صالح حتى: *{details['expiry']}*" if details["expiry"] != "غير محدد" else "⏳ الصلاحية محدودة"
 
-    return f"""🔥 كورس مجاني - {course["source"]}
+    return f"""🔥 كورس مجاني - Udemy
 
 {emoji} *{course["title"]}*
 
 📂 التصنيف: {course["category"]}
-💰 السعر: {price}{desc}
+💰 السعر: {price}
+{desc}
 ━━━━━━━━━━━━━━━━
 {coupon}
 {expiry}
-{direct}
 📅 {datetime.now().strftime("%d/%m/%Y")}
 ━━━━━━━━━━━━━━━━
 
